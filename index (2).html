@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LWA AI | Learn With Anis AI</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Inter font (Poppins is a good alternative but Inter is widely supported by Tailwind) -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --color-sky-gray: #f7f9fc;
+            --color-violet-accent: #8b5cf6; /* Violet-500 */
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--color-sky-gray);
+            /* Soft gradient background for the 'Smart Learn Universe Pro' feel */
+            background-image: linear-gradient(135deg, #e0f2fe 0%, #f7f9fc 50%, #ede9fe 100%);
+            min-height: 100vh;
+        }
+        /* Glassmorphism Effect */
+        .glass-card {
+            background-color: rgba(255, 255, 255, 0.5);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            box-shadow: 0 8px 32px 0 rgba(100, 100, 100, 0.1);
+            transition: all 0.3s ease-in-out;
+        }
+        /* Custom Accent Button Style */
+        .accent-btn {
+            background-image: linear-gradient(to right, #8b5cf6, #6366f1); /* Violet to Indigo */
+            color: white;
+            transition: transform 0.1s, box-shadow 0.1s;
+        }
+        .accent-btn:hover {
+            box-shadow: 0 4px 15px rgba(139, 92, 246, 0.5);
+            transform: translateY(-1px);
+        }
+        /* Custom Input Focus */
+        input:focus, select:focus, textarea:focus {
+            border-color: #8b5cf6;
+            box-shadow: 0 0 0 1px #8b5cf6;
+            outline: none;
+        }
+        /* Loading spinner CSS */
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid white;
+            border-radius: 50%;
+            width: 16px;
+            height: 16px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="p-4 flex items-center justify-center">
+
+    <div id="app-container" class="w-full max-w-md">
+        <!-- Application UI will be rendered here -->
+    </div>
+
+    <script type="module">
+        // --- Firebase Imports and Setup ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        setLogLevel('debug'); // Enable Firestore logging
+
+        // Global Firebase variables
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-lwa-app';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : { /* mock config */ };
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app, db, auth;
+        let userId = null;
+        let isAuthReady = false;
+
+        // Application State
+        const state = {
+            currentPage: 'login', // 'login', 'signup', 'dashboard', 'premium'
+            user: {
+                name: 'Guest',
+                email: '',
+                role: 'Student',
+                isPro: false,
+                uid: null,
+            },
+            loading: false,
+            message: null,
+            messageType: 'error' // 'success', 'error', 'info'
+        };
+
+        // UI References
+        const appContainer = document.getElementById('app-container');
+
+        // Utility function for showing notifications
+        function showNotification(msg, type = 'info') {
+            state.message = msg;
+            state.messageType = type;
+            render();
+            setTimeout(() => {
+                state.message = null;
+                render();
+            }, 5000);
+        }
+
+        // Helper to get correct Firestore paths
+        const getProfileDocRef = (uid) => doc(db, 'artifacts', appId, 'users', uid, 'profiles', 'user_profile');
+        const getPaymentsCollectionRef = () => collection(db, 'artifacts', appId, 'public', 'data', 'payments');
+
+        // --- AUTHENTICATION & INITIALIZATION ---
+
+        async function initFirebase() {
+            try {
+                if (!app) {
+                    app = initializeApp(firebaseConfig);
+                    db = getFirestore(app);
+                    auth = getAuth(app);
+
+                    // Sign in logic
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+
+                    auth.onAuthStateChanged(user => {
+                        if (user) {
+                            userId = user.uid;
+                            fetchUserProfile(userId);
+                        } else {
+                            userId = null;
+                            state.user = { name: 'Guest', email: '', role: 'Student', isPro: false, uid: null };
+                            state.currentPage = 'login';
+                            isAuthReady = true;
+                            render();
+                        }
+                    });
+                }
+            } catch (error) {
+                console.error("Firebase Initialization/Auth Error:", error);
+                showNotification(`Firebase Error: ${error.message}`, 'error');
+                isAuthReady = true;
+                render();
+            }
+        }
+
+        function fetchUserProfile(uid) {
+            const userDocRef = getProfileDocRef(uid);
+            onSnapshot(userDocRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    state.user = { ...state.user, ...docSnap.data(), uid };
+                    state.currentPage = 'dashboard';
+                } else {
+                    // New user or profile not set up yet
+                    state.user.uid = uid;
+                    state.currentPage = 'signup';
+                }
+                isAuthReady = true;
+                render();
+            }, (error) => {
+                console.error("Error fetching user profile:", error);
+                showNotification("Could not load profile. Please try refreshing.", 'error');
+                isAuthReady = true;
+                render();
+            });
+        }
+
+        async function handleLogin(email, password) {
+            state.loading = true;
+            render();
+            try {
+                await signInWithEmailAndPassword(auth, email, password);
+                // AuthStateChanged listener will handle fetching profile and setting dashboard view
+                showNotification("Login successful!", 'success');
+            } catch (error) {
+                console.error("Login error:", error);
+                showNotification(`Login failed: ${error.message}`, 'error');
+            } finally {
+                state.loading = false;
+                render();
+            }
+        }
+
+        async function handleSignup(fullName, email, password, role) {
+            state.loading = true;
+            render();
+            try {
+                const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+                const uid = userCredential.user.uid;
+
+                const profileData = {
+                    name: fullName,
+                    email: email,
+                    role: role,
+                    isPro: false,
+                    createdAt: new Date().toISOString(),
+                };
+                await setDoc(getProfileDocRef(uid), profileData);
+                showNotification("Account created! Welcome to LWA AI!", 'success');
+                // AuthStateChanged listener handles navigation to dashboard
+            } catch (error) {
+                console.error("Sign-up error:", error);
+                showNotification(`Sign-up failed: ${error.message}`, 'error');
+            } finally {
+                state.loading = false;
+                render();
+            }
+        }
+
+        async function handleLogout() {
+            state.loading = true;
+            render();
+            try {
+                await signOut(auth);
+                state.user = { name: 'Guest', email: '', role: 'Student', isPro: false, uid: null };
+                state.currentPage = 'login';
+                showNotification("Logged out successfully.", 'info');
+            } catch (error) {
+                console.error("Logout error:", error);
+                showNotification(`Logout failed: ${error.message}`, 'error');
+            } finally {
+                state.loading = false;
+                render();
+            }
+        }
+
+        // --- PAYMENT LOGIC SIMULATION ---
+
+        async function submitUtr(plan, utrId) {
+            if (!state.user.uid) {
+                showNotification("Authentication required to submit payment.", 'error');
+                return;
+            }
+
+            if (!utrId.trim()) {
+                showNotification("Please paste the UTR / Transaction ID.", 'error');
+                return;
+            }
+
+            state.loading = true;
+            render();
+            try {
+                const paymentData = {
+                    userId: state.user.uid,
+                    userName: state.user.name,
+                    userEmail: state.user.email,
+                    plan: plan,
+                    utrId: utrId.trim(),
+                    bankDetails: {
+                        account: '42880106669',
+                        ifsc: 'SBIN0009240',
+                        holder: 'MD ANIS REZA'
+                    },
+                    status: 'pending',
+                    submittedAt: new Date().toISOString(),
+                };
+
+                await addDoc(getPaymentsCollectionRef(), paymentData);
+
+                showNotification("UTR submitted successfully! Your payment is pending admin verification. You will be notified within 24 hours.", 'success');
+                // Navigate back to dashboard after submission
+                state.currentPage = 'dashboard';
+
+            } catch (error) {
+                console.error("UTR submission error:", error);
+                showNotification(`Submission failed: ${error.message}`, 'error');
+            } finally {
+                state.loading = false;
+                render();
+            }
+        }
+
+        // --- UI COMPONENTS ---
+
+        function renderLoading() {
+            return `
+                <div class="flex flex-col items-center justify-center h-64 text-gray-700">
+                    <div class="spinner !border-t-violet-500 !w-8 !h-8 mb-4"></div>
+                    <p>Loading LWA AI...</p>
+                </div>
+            `;
+        }
+
+        function renderMessage() {
+            if (!state.message) return '';
+            const bgColor = state.messageType === 'success' ? 'bg-green-100 border-green-400 text-green-700' :
+                            state.messageType === 'error' ? 'bg-red-100 border-red-400 text-red-700' :
+                            'bg-blue-100 border-blue-400 text-blue-700';
+            return `
+                <div class="p-3 mb-4 rounded-lg border ${bgColor} text-sm transition-all duration-300">
+                    ${state.message}
+                </div>
+            `;
+        }
+
+        // --- VIEWS ---
+
+        function renderLoginView() {
+            return `
+                <div class="p-6 glass-card rounded-3xl">
+                    <h2 class="text-3xl font-extrabold text-gray-800 mb-2">Welcome Back to LWA AI</h2>
+                    <p class="text-gray-500 mb-6">Study, Code, Create, Deploy - all in one place.</p>
+                    ${renderMessage()}
+                    <form id="login-form" class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1" for="login-email">Email / Username</label>
+                            <input type="email" id="login-email" required class="w-full p-3 rounded-xl border border-gray-300 focus:ring-violet-500 focus:border-violet-500 transition duration-150">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1" for="login-password">Password</label>
+                            <input type="password" id="login-password" required class="w-full p-3 rounded-xl border border-gray-300 focus:ring-violet-500 focus:border-violet-500 transition duration-150">
+                            <p class="text-xs text-gray-400 mt-1">We take your security seriously.</p>
+                        </div>
+                        <div class="flex items-center justify-between text-sm">
+                            <label class="flex items-center">
+                                <input type="checkbox" checked class="rounded text-violet-600 focus:ring-violet-500">
+                                <span class="ml-2 text-gray-600">Remember me</span>
+                            </label>
+                            <button type="button" class="text-violet-600 hover:text-violet-800 font-medium">Forgot Password?</button>
+                        </div>
+                        <button type="submit" class="accent-btn w-full p-3 rounded-xl font-semibold shadow-lg flex items-center justify-center" ${state.loading ? 'disabled' : ''}>
+                            ${state.loading ? '<div class="spinner"></div>' : 'Login'}
+                        </button>
+                    </form>
+                    <div class="mt-6 text-center text-sm">
+                        <p class="text-gray-500">Don't have an account? <button onclick="state.currentPage='signup'; render()" class="text-violet-600 hover:text-violet-800 font-medium">Sign Up</button></p>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderSignupView() {
+            const roles = ['Student', 'Developer', 'Creator', 'Teacher'];
+            return `
+                <div class="p-6 glass-card rounded-3xl">
+                    <h2 class="text-3xl font-extrabold text-gray-800 mb-2">Create Your LWA AI Account</h2>
+                    <p class="text-gray-500 mb-6">Personalize your learning and development journey.</p>
+                    ${renderMessage()}
+                    <form id="signup-form" class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1" for="signup-name">Full Name</label>
+                            <input type="text" id="signup-name" required class="w-full p-3 rounded-xl border border-gray-300">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1" for="signup-email">Email</label>
+                            <input type="email" id="signup-email" required class="w-full p-3 rounded-xl border border-gray-300">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1" for="signup-password">Password</label>
+                            <input type="password" id="signup-password" required minlength="8" class="w-full p-3 rounded-xl border border-gray-300">
+                            <p class="text-xs text-gray-400 mt-1">Minimum 8 characters for security.</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1" for="signup-role">Role Selector</label>
+                            <select id="signup-role" required class="w-full p-3 rounded-xl border border-gray-300 appearance-none bg-white">
+                                ${roles.map(role => `<option value="${role}">${role}</option>`).join('')}
+                            </select>
+                        </div>
+                        <button type="submit" class="accent-btn w-full p-3 rounded-xl font-semibold shadow-lg flex items-center justify-center" ${state.loading ? 'disabled' : ''}>
+                            ${state.loading ? '<div class="spinner"></div>' : 'Create Account'}
+                        </button>
+                    </form>
+                    <div class="mt-6 text-center text-sm">
+                        <p class="text-gray-500">Already have an account? <button onclick="state.currentPage='login'; render()" class="text-violet-600 hover:text-violet-800 font-medium">Login</button></p>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderDashboardView() {
+            const userName = state.user.name || 'User';
+            const userRole = state.user.role || 'Student';
+            const isPro = state.user.isPro;
+
+            const modeCards = [
+                { name: 'Study Zone', icon: '📚', desc: 'NCERT/Board aligned learning, quizzes, notes.', mode: 'Study Mode' },
+                { name: 'Code Zone', icon: '💻', desc: 'IDE-like chat, run snippets, GitHub deploy suggestions.', mode: 'Code Mode' },
+                { name: 'Creative Zone', icon: '🎨', desc: 'Logos, video scripts, posters, UI prompts.', mode: 'Creative Mode' },
+            ];
+
+            const panelCards = [
+                { name: 'Recent Projects', icon: '📄', color: 'bg-blue-100 text-blue-600' },
+                { name: 'Settings', icon: '⚙️', color: 'bg-gray-100 text-gray-600' },
+                { name: isPro ? 'Premium (Active)' : 'Upgrade to Pro', icon: '💎', color: isPro ? 'bg-yellow-100 text-yellow-600' : 'bg-violet-100 text-violet-600', action: () => { state.currentPage = 'premium'; render(); } },
+            ];
+
+            return `
+                <div class="p-2 md:p-6">
+                    ${renderMessage()}
+                    <div class="flex justify-between items-center mb-6">
+                        <h1 class="text-2xl font-bold text-gray-800">
+                            Hey ${userName} 👋
+                        </h1>
+                        <button onclick="handleLogout()" class="text-sm font-medium text-red-500 p-2 glass-card rounded-full hover:bg-red-50 transition">
+                            Logout
+                        </button>
+                    </div>
+
+                    <p class="text-lg text-gray-600 mb-6">Welcome back to LWA AI! <span class="text-sm text-violet-500 block">Current Role: ${userRole}</span></p>
+
+                    <h2 class="text-xl font-semibold text-gray-700 mb-3 border-b pb-1">🧭 Core Modes</h2>
+                    <div class="grid grid-cols-1 gap-4 mb-8">
+                        ${modeCards.map(card => `
+                            <div class="glass-card p-4 rounded-xl hover:shadow-xl transition-shadow cursor-pointer">
+                                <div class="text-2xl mb-1">${card.icon}</div>
+                                <h3 class="font-bold text-gray-800">${card.name}</h3>
+                                <p class="text-sm text-gray-500">${card.desc}</p>
+                                <span class="text-xs font-semibold mt-2 inline-block ${card.mode === 'Code Mode' && !isPro ? 'text-orange-500' : 'text-green-500'}">${card.mode} ${card.mode === 'Code Mode' && !isPro ? '(Limited)' : ''}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+
+                    <h2 class="text-xl font-semibold text-gray-700 mb-3 border-b pb-1">⚙️ Panels</h2>
+                    <div class="grid grid-cols-2 gap-4">
+                        ${panelCards.map(card => `
+                            <button onclick="${card.action ? `(${card.action.toString()})()` : 'showNotification(`Future feature: ${card.name} functionality not yet implemented.`, `info`)'}" class="glass-card p-4 rounded-xl flex flex-col items-start text-left hover:shadow-xl transition-shadow">
+                                <div class="p-2 rounded-full ${card.color} mb-2 text-xl">${card.icon}</div>
+                                <span class="font-semibold text-sm text-gray-800">${card.name}</span>
+                            </button>
+                        `).join('')}
+                    </div>
+                    <p class="text-center text-xs text-gray-400 mt-8">LWA AI (Learn With Anis AI) | Founder: Md Anis Reza</p>
+                </div>
+            `;
+        }
+
+        function renderPremiumView() {
+            const plans = [
+                { id: 'pro_monthly', name: 'Pro Monthly', price: '₹499', desc: 'Full Code Runner, GitHub Deploy, PDF Export, 100 code runs/day.', benefits: ['Full Mock Test Bank', 'Live Code Runner', 'Export Notes/PPT', 'Priority Chat'], accent: 'text-violet-600' },
+                { id: 'pro_yearly', name: 'Pro Yearly', price: '₹4999', desc: 'Pro Monthly discounted + monthly 1:1 mentoring + Project review.', benefits: ['All Pro Monthly Features', '1:1 Mentoring (Monthly)', 'Project Review Session', 'Exclusive Content (JEE/IIT)'], accent: 'text-pink-600', recommended: true },
+            ];
+
+            return `
+                <div class="p-4 md:p-6">
+                    <button onclick="state.currentPage='dashboard'; render()" class="text-violet-600 hover:text-violet-800 mb-4 flex items-center text-sm font-medium">
+                        <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
+                        Back to Dashboard
+                    </button>
+
+                    <h1 class="text-3xl font-extrabold text-gray-800 mb-2">Upgrade to LWA AI Pro 💎</h1>
+                    <p class="text-gray-500 mb-6">Pro features se apni padhai aur projects ko next level pe le jaayein.</p>
+                    ${renderMessage()}
+
+                    <!-- Plan Cards -->
+                    <div class="space-y-4 mb-8">
+                        ${plans.map(plan => `
+                            <div class="glass-card p-5 rounded-2xl ${plan.recommended ? 'border-2 border-violet-500 shadow-xl' : 'border border-gray-200'}">
+                                ${plan.recommended ? '<span class="absolute top-0 right-0 bg-violet-500 text-white text-xs font-semibold rounded-bl-lg rounded-tr-xl px-3 py-1">RECOMMENDED</span>' : ''}
+                                <h3 class="text-xl font-bold ${plan.accent} mb-1">${plan.name}</h3>
+                                <p class="text-3xl font-extrabold text-gray-900">${plan.price}<span class="text-base font-normal text-gray-500">/${plan.id.includes('monthly') ? 'Month' : 'Year'}</span></p>
+                                <p class="text-sm text-gray-500 my-3">${plan.desc}</p>
+                                <ul class="text-sm text-gray-700 space-y-1 mt-4">
+                                    ${plan.benefits.map(b => `<li class="flex items-center"><span class="text-violet-500 mr-2">✅</span> ${b}</li>`).join('')}
+                                </ul>
+                                <button data-plan="${plan.id}" class="select-plan-btn accent-btn w-full p-3 mt-4 rounded-xl font-semibold shadow-md">Continue to Payment</button>
+                            </div>
+                        `).join('')}
+                    </div>
+
+                    <div id="payment-details-form" class="hidden">
+                        <!-- Manual Payment Block -->
+                        <div class="glass-card p-5 rounded-2xl border border-dashed border-red-300 bg-red-50/50">
+                            <h3 class="text-xl font-bold text-red-600 mb-3">Manual Payment (Bank Transfer / UPI)</h3>
+                            <p class="text-gray-700 mb-4 text-sm font-medium">Payment karne ke baad yahan UTR/Transaction ID paste karein. Verification ke baad aapka plan activate ho jayega.</p>
+
+                            <div class="space-y-3 p-3 bg-white rounded-lg border">
+                                <p class="text-xs text-gray-500 font-semibold">BANK TRANSFER DETAILS:</p>
+                                <div class="flex justify-between text-sm"><span>Account Number:</span> <span class="font-mono">42880106669</span></div>
+                                <div class="flex justify-between text-sm"><span>IFSC Code:</span> <span class="font-mono">SBIN0009240</span></div>
+                                <div class="flex justify-between text-sm"><span>Account Holder:</span> <span class="font-semibold text-gray-800">MD ANIS REZA</span></div>
+                            </div>
+
+                            <div class="mt-4 p-3 bg-violet-50 rounded-lg border border-violet-200">
+                                <p class="text-xs text-gray-500 font-semibold mb-2">OR UPI TRANSFER:</p>
+                                <button id="copy-upi-btn" class="w-full text-sm font-semibold p-2 rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition">
+                                    Click to Copy UPI ID / Open UPI App
+                                </button>
+                            </div>
+
+                            <form id="utr-submission-form" class="mt-6 space-y-3">
+                                <input type="hidden" id="selected-plan" required>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1" for="utr-input">Transfer ka UTR / Transaction ID</label>
+                                    <input type="text" id="utr-input" required class="w-full p-3 rounded-xl border border-gray-300" placeholder="Paste UTR/Transaction ID here">
+                                </div>
+                                <button type="submit" class="accent-btn w-full p-3 rounded-xl font-semibold shadow-lg flex items-center justify-center" ${state.loading ? 'disabled' : ''}>
+                                    ${state.loading ? '<div class="spinner"></div>' : 'I have paid — Submit UTR'}
+                                </button>
+                            </form>
+                        </div>
+                        <p class="text-center text-xs text-gray-500 mt-4">Note: For instant activation, please wait for integrated payment gateway features (Razorpay/Stripe) coming soon!</p>
+                    </div>
+                </div>
+            `;
+        }
+
+
+        // --- MAIN RENDER FUNCTION ---
+        function render() {
+            if (!isAuthReady) {
+                appContainer.innerHTML = renderLoading();
+                return;
+            }
+
+            let content = '';
+            switch (state.currentPage) {
+                case 'login':
+                    content = renderLoginView();
+                    break;
+                case 'signup':
+                    content = renderSignupView();
+                    break;
+                case 'dashboard':
+                    content = renderDashboardView();
+                    break;
+                case 'premium':
+                    content = renderPremiumView();
+                    break;
+                default:
+                    content = renderLoginView();
+            }
+            appContainer.innerHTML = content;
+            attachEventListeners();
+        }
+
+        function attachEventListeners() {
+            // Login Form Listener
+            const loginForm = document.getElementById('login-form');
+            if (loginForm) {
+                loginForm.onsubmit = (e) => {
+                    e.preventDefault();
+                    const email = document.getElementById('login-email').value;
+                    const password = document.getElementById('login-password').value;
+                    handleLogin(email, password);
+                };
+            }
+
+            // Signup Form Listener
+            const signupForm = document.getElementById('signup-form');
+            if (signupForm) {
+                signupForm.onsubmit = (e) => {
+                    e.preventDefault();
+                    const fullName = document.getElementById('signup-name').value;
+                    const email = document.getElementById('signup-email').value;
+                    const password = document.getElementById('signup-password').value;
+                    const role = document.getElementById('signup-role').value;
+                    handleSignup(fullName, email, password, role);
+                };
+            }
+
+            // Premium Page Listeners (Plan Selection)
+            const selectPlanButtons = document.querySelectorAll('.select-plan-btn');
+            const paymentDetailsForm = document.getElementById('payment-details-form');
+            const selectedPlanInput = document.getElementById('selected-plan');
+
+            if (selectPlanButtons.length > 0) {
+                selectPlanButtons.forEach(btn => {
+                    btn.onclick = (e) => {
+                        const planId = e.currentTarget.getAttribute('data-plan');
+                        if (selectedPlanInput) selectedPlanInput.value = planId;
+                        if (paymentDetailsForm) paymentDetailsForm.classList.remove('hidden');
+                        showNotification(`You selected ${planId}. Please complete the manual transfer below.`, 'info');
+                    };
+                });
+
+                // UTR Submission Listener
+                const utrSubmissionForm = document.getElementById('utr-submission-form');
+                if (utrSubmissionForm) {
+                    utrSubmissionForm.onsubmit = (e) => {
+                        e.preventDefault();
+                        const plan = selectedPlanInput.value;
+                        const utrId = document.getElementById('utr-input').value;
+                        submitUtr(plan, utrId);
+                    };
+                }
+
+                // Copy UPI Button Listener
+                const copyUpiBtn = document.getElementById('copy-upi-btn');
+                const upiString = "upi://pay?pa=9263035321@postbank&pn=ULFAT NAAZ&cu=INR&mode=02&orgId=159768&sign=MEUCIQDFGz6d2o+CYcVmpexF8ObKtKuKxDMZclbevbKO0QkhDQIgCksQSGf7OQPbbyo6UxNGfN3+/ce8CBqeApfvzKgPfVA=";
+                if (copyUpiBtn) {
+                    copyUpiBtn.onclick = () => {
+                         // Attempt to copy the UPI string to the clipboard
+                         const tempInput = document.createElement("textarea");
+                         tempInput.value = upiString;
+                         document.body.appendChild(tempInput);
+                         tempInput.select();
+                         document.execCommand('copy');
+                         document.body.removeChild(tempInput);
+                         showNotification("UPI link copied! Opening UPI app simulation...", 'success');
+                         // Optionally open the deep link
+                         window.open(upiString, '_self');
+                    }
+                }
+            }
+        }
+
+        // Initialize the app on window load
+        window.onload = initFirebase;
+    </script>
+</body>
+</html>
